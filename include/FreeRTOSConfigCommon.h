@@ -19,7 +19,7 @@
 
 #define configTICK_RATE_HZ ((TickType_t) 100)
 #define configUSE_NEWLIB_REENTRANT 0
-#define configMINIMAL_STACK_SIZE 1024 /* x 4 = 4096 */
+#define configMINIMAL_STACK_SIZE 256 /* x 4 = 1024 */
 #define configMAX_PRIORITIES 25
 #define configUSE_PREEMPTION 1
 #define configUSE_IDLE_HOOK 0
