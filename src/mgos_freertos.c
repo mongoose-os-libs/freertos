@@ -55,6 +55,10 @@
 #define MGOS_MONGOOSE_MAX_POLL_SLEEP_MS 1000
 #endif
 
+#ifndef MGOS_EARLY_WDT_TIMEOUT
+#define MGOS_EARLY_WDT_TIMEOUT 30 /* seconds */
+#endif
+
 extern const char *build_version, *build_id;
 extern const char *mg_build_version, *mg_build_id;
 
@@ -190,7 +194,7 @@ IRAM void mgos_task(void *arg) {
   struct mgos_event e;
 
   mgos_wdt_enable();
-  mgos_wdt_set_timeout(30 /* seconds */);
+  mgos_wdt_set_timeout(MGOS_EARLY_WDT_TIMEOUT);
 
   enum mgos_init_result r = mgos_init2();
   bool success = (r == MGOS_INIT_OK);
@@ -383,6 +387,10 @@ IRAM void mgos_usleep(uint32_t usecs) {
     while (mgos_uptime_micros() < threshold) {
     }
   }
+}
+
+IRAM void mgos_msleep(uint32_t msecs) {
+  mgos_usleep(msecs * 1000);
 }
 
 #endif /* MGOS_BOOT_BUILD */
