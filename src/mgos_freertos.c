@@ -270,6 +270,8 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
 
   mgos_app_preinit();
 
+  mgos_cd_register_section_writer(mgos_freertos_core_dump);
+
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
   s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
                                  mgos_mg_poll_timer_cb);
