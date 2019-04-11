@@ -169,6 +169,7 @@ enum mgos_init_result mgos_init2(void) {
 
   setvbuf(stdout, NULL, _IOLBF, 256);
   setvbuf(stderr, NULL, _IOLBF, 256);
+  fputs("\n\n", stderr);
 
   if (strcmp(MGOS_APP, "mongoose-os") != 0) {
     LOG(LL_INFO, ("%s %s (%s)", MGOS_APP, build_version, build_id));
