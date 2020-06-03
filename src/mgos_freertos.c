@@ -70,6 +70,8 @@ static TimerHandle_t s_mg_poll_timer;
 
 /* ESP32 has a slightly different FreeRTOS API */
 #if CS_PLATFORM == CS_P_ESP32
+#include <sdkconfig.h>
+
 static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define ENTER_CRITICAL() portENTER_CRITICAL(&s_poll_spinlock)
 #define EXIT_CRITICAL() portEXIT_CRITICAL(&s_poll_spinlock)
@@ -276,9 +278,18 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
   s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
                                  mgos_mg_poll_timer_cb);
+#if CS_PLATFORM == CS_P_ESP32 && !defined(CONFIG_FREERTOS_UNICORE)
+  // On ESP32 in SMP mode pin our task to core 1 (app cpu).
+  // This is to avoid difficulties with interrupt allocation / deallocation:
+  // https://docs.espressif.com/projects/esp-idf/en/stable/api-reference/system/intr_alloc.html#multicore-issues
+  xTaskCreateStaticPinnedToCore(
+      mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / STACK_SIZE_UNIT, NULL,
+      MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb, 1);
+#else
   xTaskCreateStatic(mgos_task, "mgos",
                     MGOS_TASK_STACK_SIZE_BYTES / STACK_SIZE_UNIT, NULL,
                     MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb);
+#endif
   if (start_scheduler) {
     vTaskStartScheduler();
     mgos_cd_puts("Scheduler failed to start!\n");
