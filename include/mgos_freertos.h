@@ -23,7 +23,34 @@
 #include "queue.h"
 #include "task.h"
 
+#include "mongoose.h"
 #include "mgos_init.h"
+
+#ifndef MGOS_TASK_STACK_SIZE_BYTES
+#define MGOS_TASK_STACK_SIZE_BYTES 8192
+#endif
+
+#ifndef MGOS_TASK_PRIORITY
+#define MGOS_TASK_PRIORITY 5
+#endif
+
+#ifndef MGOS_TASK_QUEUE_LENGTH
+#define MGOS_TASK_QUEUE_LENGTH 32
+#endif
+
+#ifndef MGOS_MONGOOSE_MAX_POLL_SLEEP_MS
+#define MGOS_MONGOOSE_MAX_POLL_SLEEP_MS 1000
+#endif
+
+#ifndef MGOS_EARLY_WDT_TIMEOUT
+#define MGOS_EARLY_WDT_TIMEOUT 30 /* seconds */
+#endif
+
+#if CS_PLATFORM == CS_P_ESP32
+#define MGOS_TASK_STACK_SIZE_UNIT 1
+#else
+#define MGOS_TASK_STACK_SIZE_UNIT sizeof(portSTACK_TYPE)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
