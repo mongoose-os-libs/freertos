@@ -39,26 +39,6 @@
 #include "mgos_uart_internal.h"
 #include "mgos_utils.h"
 
-#ifndef MGOS_TASK_STACK_SIZE_BYTES
-#define MGOS_TASK_STACK_SIZE_BYTES 8192
-#endif
-
-#ifndef MGOS_TASK_PRIORITY
-#define MGOS_TASK_PRIORITY 5
-#endif
-
-#ifndef MGOS_TASK_QUEUE_LENGTH
-#define MGOS_TASK_QUEUE_LENGTH 32
-#endif
-
-#ifndef MGOS_MONGOOSE_MAX_POLL_SLEEP_MS
-#define MGOS_MONGOOSE_MAX_POLL_SLEEP_MS 1000
-#endif
-
-#ifndef MGOS_EARLY_WDT_TIMEOUT
-#define MGOS_EARLY_WDT_TIMEOUT 30 /* seconds */
-#endif
-
 extern const char *build_version, *build_id;
 extern const char *mg_build_version, *mg_build_id;
 
@@ -82,7 +62,6 @@ static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
   {                                         \
     if (should_yield) portYIELD_FROM_ISR(); \
   }
-#define STACK_SIZE_UNIT 1
 #else
 #define ENTER_CRITICAL() portENTER_CRITICAL()
 #define EXIT_CRITICAL() portEXIT_CRITICAL()
@@ -92,7 +71,6 @@ static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define EXIT_CRITICAL_NO_ISR(from_isr) \
   if (!from_isr) portEXIT_CRITICAL()
 #define YIELD_FROM_ISR(should_yield) portYIELD_FROM_ISR(should_yield)
-#define STACK_SIZE_UNIT sizeof(portSTACK_TYPE)
 #endif
 
 static IRAM void mgos_mg_poll_cb(void *arg) {
@@ -283,11 +261,11 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   // This is to avoid difficulties with interrupt allocation / deallocation:
   // https://docs.espressif.com/projects/esp-idf/en/stable/api-reference/system/intr_alloc.html#multicore-issues
   xTaskCreateStaticPinnedToCore(
-      mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / STACK_SIZE_UNIT, NULL,
+      mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
       MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb, 1);
 #else
   xTaskCreateStatic(mgos_task, "mgos",
-                    MGOS_TASK_STACK_SIZE_BYTES / STACK_SIZE_UNIT, NULL,
+                    MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
                     MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb);
 #endif
   if (start_scheduler) {
@@ -307,7 +285,7 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
   s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
                                  mgos_mg_poll_timer_cb);
-  xTaskCreate(mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / STACK_SIZE_UNIT,
+  xTaskCreate(mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT,
               NULL, MGOS_TASK_PRIORITY, NULL);
   if (start_scheduler) {
     vTaskStartScheduler();
