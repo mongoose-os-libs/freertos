@@ -31,6 +31,11 @@ conds:
         - FreeRTOS/Source/portable/${build_vars.FREERTOS_PORT}
         - include/cmsis
 
+  - when: mos.platform == "cc3200"
+    apply:
+      cdefs:
+        MGOS_BG_TASK_PRIORITY: 0
+
 no_implicit_init_deps: true
 
 manifest_version: 2018-06-12

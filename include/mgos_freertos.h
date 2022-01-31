@@ -23,8 +23,8 @@
 #include "queue.h"
 #include "task.h"
 
-#include "mongoose.h"
 #include "mgos_init.h"
+#include "mongoose.h"
 
 #ifndef MGOS_TASK_STACK_SIZE_BYTES
 #define MGOS_TASK_STACK_SIZE_BYTES 8192
@@ -32,6 +32,10 @@
 
 #ifndef MGOS_TASK_PRIORITY
 #define MGOS_TASK_PRIORITY 5
+#endif
+
+#ifndef MGOS_BG_TASK_PRIORITY
+#define MGOS_BG_TASK_PRIORITY (MGOS_TASK_PRIORITY - 1)  // Set to 0 to disable
 #endif
 
 #ifndef MGOS_TASK_QUEUE_LENGTH

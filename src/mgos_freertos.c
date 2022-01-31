@@ -44,6 +44,11 @@ extern const char *mg_build_version, *mg_build_id;
 
 static QueueHandle_t s_main_queue;
 static SemaphoreHandle_t s_mgos_mux;
+#if MGOS_BG_TASK_PRIORITY > 0
+static QueueHandle_t s_bg_queue;
+#else
+#define s_bg_queue s_main_queue
+#endif
 
 static uint32_t s_mg_polls_in_flight = 0;
 static TimerHandle_t s_mg_poll_timer;
@@ -202,17 +207,29 @@ IRAM void mgos_task(void *arg) {
   }
 }
 
-IRAM bool mgos_invoke_cb(mgos_cb_t cb, void *arg, bool from_isr) {
+void mgos_bg_task(void *arg) {
+  struct mgos_event e;
+  (void) arg;
+  while (true) {
+    while (xQueueReceive(s_bg_queue, &e, 10 /* tick */)) {
+      e.cb(e.arg);
+    }
+  }
+}
+
+IRAM bool mgos_invoke_cb(mgos_cb_t cb, void *arg, uint32_t flags) {
   struct mgos_event e = {.cb = cb, .arg = arg};
-  if (from_isr) {
+  QueueHandle_t q =
+      ((flags & MGOS_INVOKE_CB_F_BG_TASK) ? s_bg_queue : s_main_queue);
+  if ((flags & MGOS_INVOKE_CB_F_FROM_ISR)) {
     BaseType_t should_yield = false;
-    if (!xQueueSendToBackFromISR(s_main_queue, &e, &should_yield)) {
+    if (!xQueueSendToBackFromISR(q, &e, &should_yield)) {
       return false;
     }
     YIELD_FROM_ISR(should_yield);
     return true;
   } else {
-    return xQueueSendToBack(s_main_queue, &e, 10);
+    return xQueueSendToBack(q, &e, 10);
   }
 }
 
@@ -238,12 +255,16 @@ void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer,
 }
 
 void mgos_freertos_run_mgos_task(bool start_scheduler) {
+#define STACK_SIZE (MGOS_TASK_STACK_SIZE_BYTES / sizeof(StackType_t))
   static StaticTask_t mgos_task_tcb;
-  static StackType_t
-      mgos_task_stack[MGOS_TASK_STACK_SIZE_BYTES / sizeof(StackType_t)];
-
+  static StackType_t mgos_task_stack[STACK_SIZE];
   s_main_queue =
       xQueueCreate(MGOS_TASK_QUEUE_LENGTH, sizeof(struct mgos_event));
+#if MGOS_BG_TASK_PRIORITY > 0
+  static StaticTask_t mgos_bg_task_tcb;
+  static StackType_t mgos_bg_task_stack[STACK_SIZE];
+  s_bg_queue = xQueueCreate(MGOS_TASK_QUEUE_LENGTH, sizeof(struct mgos_event));
+#endif
 
   mgos_uart_init();
   mgos_debug_init();
@@ -261,12 +282,24 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   // This is to avoid difficulties with interrupt allocation / deallocation:
   // https://docs.espressif.com/projects/esp-idf/en/stable/api-reference/system/intr_alloc.html#multicore-issues
   xTaskCreateStaticPinnedToCore(
-      mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
-      MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb, 1);
+      mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT,
+      NULL, MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb, 1);
+#if MGOS_BG_TASK_PRIORITY > 0
+  xTaskCreateStaticPinnedToCore(
+      mgos_bg_task, "mgos_bg",
+      MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
+      MGOS_BG_TASK_PRIORITY, mgos_bg_task_stack, &mgos_bg_task_tcb, 1);
+#endif
 #else
   xTaskCreateStatic(mgos_task, "mgos",
-                    MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
-                    MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb);
+                    MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT,
+                    NULL, MGOS_TASK_PRIORITY, mgos_task_stack, &mgos_task_tcb);
+#if MGOS_BG_TASK_PRIORITY > 0
+  xTaskCreateStatic(mgos_task, "mgos_bg",
+                    MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT,
+                    NULL, MGOS_BG_TASK_PRIORITY, mgos_bg_task_stack,
+                    &mgos_bg_task_tcb);
+#endif
 #endif
   if (start_scheduler) {
     vTaskStartScheduler();
@@ -285,8 +318,9 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
   s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
                                  mgos_mg_poll_timer_cb);
-  xTaskCreate(mgos_task, "mgos", MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT,
-              NULL, MGOS_TASK_PRIORITY, NULL);
+  xTaskCreate(mgos_task, "mgos",
+              MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
+              MGOS_TASK_PRIORITY, NULL);
   if (start_scheduler) {
     vTaskStartScheduler();
     mgos_cd_puts("Scheduler failed to start!\n");
