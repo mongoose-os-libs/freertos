@@ -31,6 +31,13 @@ conds:
         - FreeRTOS/Source/portable/${build_vars.FREERTOS_PORT}
         - include/cmsis
 
+  - when: mos.platform == "esp32"
+    apply:
+      build_vars:
+        ESP_IDF_SDKCONFIG_OPTS: >
+          ${build_vars.ESP_IDF_SDKCONFIG_OPTS}
+          CONFIG_FREERTOS_TIMER_TASK_PRIORITY=2
+
   - when: mos.platform == "cc3200"
     apply:
       cdefs:
