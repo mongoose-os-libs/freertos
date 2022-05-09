@@ -36,7 +36,7 @@
 
 #ifndef MGOS_BG_TASK_PRIORITY
 #ifndef STM32L4
-#define MGOS_BG_TASK_PRIORITY (MGOS_TASK_PRIORITY - 1)  // Set to 0 to disable
+#define MGOS_BG_TASK_PRIORITY 1  // Set to 0 to disable
 #else
 // L4 places .bss in SRAM2 and there just isn't enough of it.
 #define MGOS_BG_TASK_PRIORITY 0

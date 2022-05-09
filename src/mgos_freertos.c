@@ -50,8 +50,14 @@ static QueueHandle_t s_bg_queue;
 #define s_bg_queue s_main_queue
 #endif
 
+#if MGOS_BG_TASK_PRIORITY >= MGOS_TASK_PRIORITY
+#error Background task's priority must be less than the main task's
+#endif
+#if MGOS_BG_TASK_PRIORITY >= configTIMER_TASK_PRIORITY
+#error Background task's priority must be less than the timer task's
+#endif
+
 static uint32_t s_mg_polls_in_flight = 0;
-static TimerHandle_t s_mg_poll_timer;
 
 /* ESP32 has a slightly different FreeRTOS API */
 #if CS_PLATFORM == CS_P_ESP32
@@ -78,11 +84,14 @@ static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define YIELD_FROM_ISR(should_yield) portYIELD_FROM_ISR(should_yield)
 #endif
 
-static IRAM void mgos_mg_poll_cb(void *arg) {
+TickType_t s_poll_timeout_ticks = 0;
+
+static void mgos_mg_poll_cb(void *arg UNUSED_ARG) {
   ENTER_CRITICAL();
   s_mg_polls_in_flight--;
   EXIT_CRITICAL();
-  int timeout_ms = 0, timeout_ticks = 0;
+  int timeout_ms = 0;
+  s_poll_timeout_ticks = 0;
   if (mongoose_poll(0) == 0) {
     /* Nothing is happening now, see when next timer is due. */
     double min_timer = mg_mgr_min_timer(mgos_get_mgr());
@@ -100,14 +109,7 @@ static IRAM void mgos_mg_poll_cb(void *arg) {
   } else {
     /* Things are happening, we need another poll ASAP. */
   }
-  if (timeout_ms == 0 ||
-      (timeout_ticks = (timeout_ms / portTICK_PERIOD_MS)) == 0) {
-    mongoose_schedule_poll(false /* from_isr */);
-  } else {
-    xTimerChangePeriod(s_mg_poll_timer, timeout_ticks, 10);
-    xTimerReset(s_mg_poll_timer, 10);
-  }
-  (void) arg;
+  s_poll_timeout_ticks = (timeout_ms / portTICK_PERIOD_MS);
 }
 
 IRAM void mongoose_schedule_poll(bool from_isr) {
@@ -132,13 +134,7 @@ IRAM void mongoose_schedule_poll(bool from_isr) {
   }
 }
 
-void mgos_mg_poll_timer_cb(TimerHandle_t t) {
-  mongoose_schedule_poll(false /* from_isr */);
-  (void) t;
-}
-
-void mg_lwip_mgr_schedule_poll(struct mg_mgr *mgr) {
-  (void) mgr;
+void mg_lwip_mgr_schedule_poll(struct mg_mgr *mgr UNUSED_ARG) {
   mongoose_schedule_poll(false /* from_isr */);
 }
 
@@ -176,7 +172,7 @@ enum mgos_init_result mgos_init2(void) {
   return r;
 }
 
-IRAM void mgos_task(void *arg) {
+void mgos_task(void *arg UNUSED_ARG) {
   struct mgos_event e;
 
   mgos_wdt_enable();
@@ -199,17 +195,17 @@ IRAM void mgos_task(void *arg) {
     mgos_system_restart();
   }
 
-  (void) arg;
   while (true) {
-    while (xQueueReceive(s_main_queue, &e, 10 /* tick */)) {
+    if (xQueueReceive(s_main_queue, &e, s_poll_timeout_ticks)) {
       e.cb(e.arg);
+    } else {
+      mongoose_schedule_poll(false /* from_isr */);
     }
   }
 }
 
-void mgos_bg_task(void *arg) {
+void mgos_bg_task(void *arg UNUSED_ARG) {
   struct mgos_event e;
-  (void) arg;
   while (true) {
     while (xQueueReceive(s_bg_queue, &e, 10 /* tick */)) {
       e.cb(e.arg);
@@ -275,8 +271,6 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   mgos_cd_register_section_writer(mgos_freertos_core_dump);
 
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
-  s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
-                                 mgos_mg_poll_timer_cb);
 #if CS_PLATFORM == CS_P_ESP32 && !defined(CONFIG_FREERTOS_UNICORE)
   // On ESP32 in SMP mode pin our tasks to core 1 (app cpu).
   // This is to avoid difficulties with interrupt allocation / deallocation:
@@ -316,8 +310,6 @@ void mgos_freertos_run_mgos_task(bool start_scheduler) {
   s_main_queue =
       xQueueCreate(MGOS_TASK_QUEUE_LENGTH, sizeof(struct mgos_event));
   s_mgos_mux = xSemaphoreCreateRecursiveMutex();
-  s_mg_poll_timer = xTimerCreate("mg_poll", 10, pdFALSE /* reload */, 0,
-                                 mgos_mg_poll_timer_cb);
   xTaskCreate(mgos_task, "mgos",
               MGOS_TASK_STACK_SIZE_BYTES / MGOS_TASK_STACK_SIZE_UNIT, NULL,
               MGOS_TASK_PRIORITY, NULL);
