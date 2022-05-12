@@ -57,8 +57,6 @@ static QueueHandle_t s_bg_queue;
 #error Background task's priority must be less than the timer task's
 #endif
 
-static uint32_t s_mg_polls_in_flight = 0;
-
 /* ESP32 has a slightly different FreeRTOS API */
 #if CS_PLATFORM == CS_P_ESP32
 #include <sdkconfig.h>
@@ -66,9 +64,6 @@ static uint32_t s_mg_polls_in_flight = 0;
 static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define ENTER_CRITICAL() portENTER_CRITICAL(&s_poll_spinlock)
 #define EXIT_CRITICAL() portEXIT_CRITICAL(&s_poll_spinlock)
-/* On ESP32 critical s-s are implemented using a spinlock, so it's the same. */
-#define ENTER_CRITICAL_NO_ISR(from_isr) portENTER_CRITICAL(&s_poll_spinlock)
-#define EXIT_CRITICAL_NO_ISR(from_isr) portEXIT_CRITICAL(&s_poll_spinlock)
 #define YIELD_FROM_ISR(should_yield)        \
   {                                         \
     if (should_yield) portYIELD_FROM_ISR(); \
@@ -76,74 +71,21 @@ static portMUX_TYPE s_poll_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #else
 #define ENTER_CRITICAL() portENTER_CRITICAL()
 #define EXIT_CRITICAL() portEXIT_CRITICAL()
-/* Elsewhere critical sections = disable ints, must not be done from ISR */
-#define ENTER_CRITICAL_NO_ISR(from_isr) \
-  if (!from_isr) portENTER_CRITICAL()
-#define EXIT_CRITICAL_NO_ISR(from_isr) \
-  if (!from_isr) portEXIT_CRITICAL()
 #define YIELD_FROM_ISR(should_yield) portYIELD_FROM_ISR(should_yield)
 #endif
 
-TickType_t s_poll_timeout_ticks = 0;
-
-static void mgos_mg_poll_cb(void *arg UNUSED_ARG) {
-  ENTER_CRITICAL();
-  s_mg_polls_in_flight--;
-  EXIT_CRITICAL();
-  int timeout_ms = 0;
-  s_poll_timeout_ticks = 0;
-  if (mongoose_poll(0) == 0) {
-    /* Nothing is happening now, see when next timer is due. */
-    double min_timer = mg_mgr_min_timer(mgos_get_mgr());
-    if (min_timer > 0) {
-      /* Note: timeout_ms can get negative if a timer is past due. That's ok. */
-      timeout_ms = (int) ((min_timer - mg_time()) * 1000.0);
-      if (timeout_ms < 0) {
-        timeout_ms = 0; /* Now */
-      } else if (timeout_ms > MGOS_MONGOOSE_MAX_POLL_SLEEP_MS) {
-        timeout_ms = MGOS_MONGOOSE_MAX_POLL_SLEEP_MS;
-      }
-    } else {
-      timeout_ms = MGOS_MONGOOSE_MAX_POLL_SLEEP_MS;
-    }
-  } else {
-    /* Things are happening, we need another poll ASAP. */
-  }
-  s_poll_timeout_ticks = (timeout_ms / portTICK_PERIOD_MS);
-}
-
-IRAM void mongoose_schedule_poll(bool from_isr) {
-  /* Prevent piling up of poll callbacks. */
-  ENTER_CRITICAL_NO_ISR(from_isr);
-  if (s_mg_polls_in_flight < 2) {
-    s_mg_polls_in_flight++;
-    EXIT_CRITICAL_NO_ISR(from_isr);
-    if (!mgos_invoke_cb(mgos_mg_poll_cb, NULL, from_isr)) {
-      /* Ok, that didn't work, roll back our counter change. */
-      ENTER_CRITICAL_NO_ISR(from_isr);
-      s_mg_polls_in_flight--;
-      EXIT_CRITICAL_NO_ISR(from_isr);
-      /*
-       * Not much else we can do here, the queue is full.
-       * Background poll timer will eventually restart polling.
-       */
-    }
-  } else {
-    /* There are at least two pending callbacks, don't bother. */
-    EXIT_CRITICAL_NO_ISR(from_isr);
-  }
-}
-
-void mg_lwip_mgr_schedule_poll(struct mg_mgr *mgr UNUSED_ARG) {
-  mongoose_schedule_poll(false /* from_isr */);
-}
+/* Ticks until next poll. */
+static volatile TickType_t s_poll_timeout_ticks = 0;
+/* Next poll's absolute time. */
+static volatile TickType_t s_poll_deadline_ticks = 0;
+static void mgos_mg_do_poll(void);
 
 struct mgos_event {
   mgos_cb_t cb;
   void *arg;
 };
 
-enum mgos_init_result mgos_init2(void) {
+static enum mgos_init_result mgos_init2(void) {
   enum mgos_init_result r;
 
   cs_log_set_level(MGOS_EARLY_DEBUG_LEVEL);
@@ -198,16 +140,19 @@ void mgos_task(void *arg UNUSED_ARG) {
   while (true) {
     if (xQueueReceive(s_main_queue, &e, s_poll_timeout_ticks)) {
       e.cb(e.arg);
-    } else {
-      mongoose_schedule_poll(false /* from_isr */);
+      /* Check if a poll is due. */
+      if (xTaskGetTickCount() < s_poll_deadline_ticks) {
+        continue;
+      }
     }
+    mgos_mg_do_poll();
   }
 }
 
 void mgos_bg_task(void *arg UNUSED_ARG) {
   struct mgos_event e;
   while (true) {
-    while (xQueueReceive(s_bg_queue, &e, 10 /* tick */)) {
+    while (xQueueReceive(s_bg_queue, &e, portMAX_DELAY)) {
       e.cb(e.arg);
     }
   }
@@ -227,6 +172,57 @@ IRAM bool mgos_invoke_cb(mgos_cb_t cb, void *arg, uint32_t flags) {
   } else {
     return xQueueSendToBack(q, &e, 10);
   }
+}
+
+static void mgos_mg_do_poll(void) {
+  if (mongoose_poll(0) == 0) {
+    /* Nothing is happening now, see when next timer is due. */
+    int timeout_ms = 0;
+    double min_timer = mg_mgr_min_timer(mgos_get_mgr());
+    if (min_timer > 0) {
+      /* Note: timeout_ms can get negative if a timer is past due. That's ok. */
+      timeout_ms = (int) ((min_timer - mg_time()) * 1000.0);
+      if (timeout_ms < 0) {
+        timeout_ms = 0; /* Now */
+      } else if (timeout_ms > MGOS_MONGOOSE_MAX_POLL_SLEEP_MS) {
+        timeout_ms = MGOS_MONGOOSE_MAX_POLL_SLEEP_MS;
+      }
+    } else {
+      timeout_ms = MGOS_MONGOOSE_MAX_POLL_SLEEP_MS;
+    }
+    s_poll_timeout_ticks = (timeout_ms / portTICK_PERIOD_MS);
+    /* Wraparound? Some extra polls, should be fine. */
+    s_poll_deadline_ticks = xTaskGetTickCount() + s_poll_timeout_ticks;
+  } else {
+    /* Things are happening, we need another poll ASAP. */
+    s_poll_timeout_ticks = 0;
+    s_poll_deadline_ticks = 0;
+  }
+}
+
+static void mgos_mg_poll_cb(void *arg UNUSED_ARG) {
+  /* Poll will be executed immediately after we return. */
+  s_poll_deadline_ticks = 0;
+}
+
+IRAM void mongoose_schedule_poll(bool from_isr) {
+  /* If queue is not empty, this will be sufficient. */
+  s_poll_timeout_ticks = 0;
+  s_poll_deadline_ticks = 0;
+  /* If queue is empty, throw a callback on it. */
+  bool is_empty;
+  if (from_isr) {
+    is_empty = (uxQueueMessagesWaitingFromISR(s_main_queue) == 0);
+  } else {
+    is_empty = (uxQueueMessagesWaiting(s_main_queue) == 0);
+  }
+  if (is_empty) {
+    mgos_invoke_cb(mgos_mg_poll_cb, NULL, from_isr);
+  }
+}
+
+void mg_lwip_mgr_schedule_poll(struct mg_mgr *mgr UNUSED_ARG) {
+  mongoose_schedule_poll(false /* from_isr */);
 }
 
 #if configSUPPORT_STATIC_ALLOCATION
