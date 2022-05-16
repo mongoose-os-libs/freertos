@@ -226,6 +226,7 @@ void mg_lwip_mgr_schedule_poll(struct mg_mgr *mgr UNUSED_ARG) {
 }
 
 #if configSUPPORT_STATIC_ALLOCATION
+#if CS_PLATFORM != CS_P_ESP32
 void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer,
                                    StackType_t **ppxIdleTaskStackBuffer,
                                    uint32_t *pulIdleTaskStackSize) {
@@ -245,6 +246,7 @@ void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer,
   *ppxTimerTaskStackBuffer = uxTimerTaskStack;
   *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
 }
+#endif // CS_PLATFORM != CS_P_ESP32
 
 void mgos_freertos_run_mgos_task(bool start_scheduler) {
 #define STACK_SIZE (MGOS_TASK_STACK_SIZE_BYTES / sizeof(StackType_t))
