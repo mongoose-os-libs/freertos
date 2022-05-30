@@ -141,7 +141,9 @@ void mgos_task(void *arg UNUSED_ARG) {
     if (xQueueReceive(s_main_queue, &e, s_poll_timeout_ticks)) {
       e.cb(e.arg);
       /* Check if a poll is due. */
-      if (xTaskGetTickCount() < s_poll_deadline_ticks) {
+      const int diff = s_poll_deadline_ticks - xTaskGetTickCount();
+      if (diff > 0) {
+        s_poll_timeout_ticks = diff;
         continue;
       }
     }
